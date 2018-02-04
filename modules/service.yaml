@@ -1,0 +1,194 @@
+Description: >
+    This is an example of a long running ECS service.
+Parameters: 
+
+    VPC:
+        Description: The VPC that the ECS cluster is deployed to
+        Type: AWS::EC2::VPC::Id
+
+    Subnet1:
+        Description: Please provide the Subnet 1 ID
+        Type: String
+
+    Subnet2:
+        Description: Please provide the Subnet 2 ID
+        Type: String
+
+    SecurityGroup:
+        Description: A reference to the security group for ECS hosts
+        Type: String
+
+    ServiceName:
+        Description: Please provide a name for the ECS Service
+        Type: String
+        
+    Cluster:
+        Description: Please provide the ECS Cluster ID that this service should run on
+        Type: String
+
+    ImageURL:
+        Description: Please enter the URL for the Docker image
+        Type: String
+        Default: blackicebird/2048
+
+    DesiredCount: 
+        Description: How many instances of this task should we run across our cluster?
+        Type: Number
+        Default: 2
+
+    Listener:
+        Description: The Application Load Balancer listener to register with
+        Type: String
+
+    TargetGroup:
+        Description: The Target Group to register with
+        Type: String
+
+    Path: 
+        Description: The path to register with the Application Load Balancer
+        Type: String
+        Default: /
+
+    Env1:
+        Type: String
+        Description: An item of possible environment variables
+        Default: ''
+
+    Env2:
+        Type: String
+        Description: An item of possible environment variables
+        Default: ''
+
+    Env3:
+        Type: String
+        Description: An item of possible environment variables
+        Default: ''
+
+
+Conditions:
+    Env1Exist: !Not [ !Equals [!Ref Env1, '']]
+    Env2Exist: !Not [ !Equals [!Ref Env2, '']]
+    Env3Exist: !Not [ !Equals [!Ref Env3, '']]
+
+Resources:
+
+    CloudWatchLogsGroup:
+        Type: AWS::Logs::LogGroup
+        Properties: 
+            LogGroupName: !Ref AWS::StackName
+            RetentionInDays: 365
+
+    Service: 
+        Type: AWS::ECS::Service
+        DependsOn: ListenerRule
+        Properties:
+            ServiceName: !Ref ServiceName
+            Cluster: !Ref Cluster
+            LaunchType: FARGATE
+            # Role: !Ref ServiceRole
+            DesiredCount: !Ref DesiredCount
+            TaskDefinition: !Ref TaskDefinition
+            NetworkConfiguration:
+                AwsvpcConfiguration:
+                    SecurityGroups:
+                        - !Ref SecurityGroup
+                    Subnets:
+                        - !Ref Subnet1
+                        - !Ref Subnet2
+            LoadBalancers: 
+                - ContainerName: "containerName"
+                  ContainerPort: 80
+                  TargetGroupArn: !Ref TargetGroup
+
+    TaskDefinition:
+        Type: AWS::ECS::TaskDefinition
+        Properties:
+            Cpu: 512
+            Family: !Join ['-', [!Ref 'AWS::StackName', taskDefinition]]
+            NetworkMode: awsvpc
+            RequiresCompatibilities:
+                - FARGATE
+            ExecutionRoleArn: !Ref TaskExecutionRole
+            TaskRoleArn: !Ref TaskExecutionRole
+            Memory: 1.0GB
+            ContainerDefinitions:
+                - Name: containerName
+                  Essential: true
+                  Image: !Ref ImageURL
+                  Cpu: 512
+                  PortMappings:
+                    - ContainerPort: 80
+                      HostPort: 80
+                  LogConfiguration:
+                      LogDriver: awslogs
+                      Options:
+                          awslogs-group: !Ref CloudWatchLogsGroup
+                          awslogs-region: !Ref 'AWS::Region'
+                          awslogs-stream-prefix: fargate-app
+                  Environment:
+                    'Fn::If':
+                        - Env1Exist
+                        -
+                            - Name: !Select [0, !Split ["|", !Ref Env1]]
+                              Value: !Select [1, !Split ["|", !Ref Env1]]
+                            - 'Fn::If':
+                                - Env2Exist
+                                -
+                                    Name: !Select [0, !Split ["|", !Ref Env2]]
+                                    Value: !Select [1, !Split ["|", !Ref Env2]]
+                                - !Ref "AWS::NoValue"
+                            - 'Fn::If':
+                                - Env3Exist
+                                -
+                                    Name: !Select [0, !Split ["|", !Ref Env3]]
+                                    Value: !Select [1, !Split ["|", !Ref Env3]]
+                                - !Ref "AWS::NoValue"
+                        - !Ref "AWS::NoValue"
+    
+    ListenerRule:
+        Type: AWS::ElasticLoadBalancingV2::ListenerRule
+        Properties:
+            ListenerArn: !Ref Listener
+            Priority: 2
+            Conditions:
+                - Field: path-pattern
+                  Values: 
+                    - !Ref Path
+            Actions:
+                - TargetGroupArn: !Ref TargetGroup
+                  Type: forward
+
+    # This IAM Role grants the service access to register/unregister with the 
+    # Application Load Balancer (ALB). It is based on the default documented here:
+    # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/service_IAM_role.html
+    TaskExecutionRole: 
+        Type: AWS::IAM::Role
+        Properties: 
+            RoleName: !Sub ecs-task-exec-${AWS::StackName}
+            Path: /
+            AssumeRolePolicyDocument: |
+                {
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": { "Service": [ "ecs-tasks.amazonaws.com" ]},
+                        "Action": [ "sts:AssumeRole" ]
+                    }]
+                }
+            Policies: 
+                - PolicyName: !Sub ecs-service-${AWS::StackName}
+                  PolicyDocument: 
+                    {
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                                "Effect": "Allow",
+                                "Action": [
+                                    "ecr:GetAuthorizationToken",
+                                    "ecr:BatchCheckLayerAvailability",
+                                    "ecr:GetDownloadUrlForLayer",
+                                    "ecr:BatchGetImage","logs:CreateLogStream",
+                                    "logs:PutLogEvents",
+                                    "ecs:StartTelemetrySession"
+                                ],
+                                "Resource": "*"
+                        }]
+                    }
